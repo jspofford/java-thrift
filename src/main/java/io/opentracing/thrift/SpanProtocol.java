@@ -50,7 +50,7 @@ public class SpanProtocol extends TProtocolDecorator {
   private final boolean finishSpan;
   static final short SPAN_FIELD_ID = 3333; // Magic number
   private boolean oneWay;
-  private boolean injected;
+  private int level;
 
   /**
    * Encloses the specified protocol.
@@ -84,13 +84,15 @@ public class SpanProtocol extends TProtocolDecorator {
 
   @Override
   public void writeMessageBegin(TMessage tMessage) throws TException {
+    // Always reset the level at message begin.  The last field stop will insert the span at this level.
+    level = 0;
+
     Span span = tracer.buildSpan(tMessage.name)
         .withTag(Tags.SPAN_KIND.getKey(), Tags.SPAN_KIND_CLIENT)
         .start();
     spanHolder.setSpan(span);
 
     oneWay = tMessage.type == TMessageType.ONEWAY;
-    injected = false;
 
     SpanDecorator.decorate(span, tMessage);
     super.writeMessageBegin(tMessage);
@@ -111,7 +113,8 @@ public class SpanProtocol extends TProtocolDecorator {
 
   @Override
   public void writeFieldStop() throws TException {
-    if (!injected) {
+    // Pass over span details for the last nested field stop of the message
+    if (level == 0) {
       Span span = spanHolder.getSpan();
       if (span != null) {
         Map<String, String> map = new HashMap<>();
@@ -126,11 +129,26 @@ public class SpanProtocol extends TProtocolDecorator {
         }
         super.writeMapEnd();
         super.writeFieldEnd();
-        injected = true;
       }
     }
 
     super.writeFieldStop();
+  }
+
+  @Override
+  public void writeFieldBegin(TField tField) throws TException
+  {
+    // Begin increments nested level
+    level++;
+    super.writeFieldBegin(tField);
+  }
+
+  @Override
+  public void writeFieldEnd() throws TException
+  {
+    // End decrements nested level
+    level--;
+    super.writeFieldEnd();
   }
 
   @Override
